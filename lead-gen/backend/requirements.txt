@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+websockets
+python-dotenv
+crewai
+crewai-tools
+langchain-groq
+duckduckgo-search
+requests
+beautifulsoup4
+lxml
+playwright
+pyisemail
+pandas
+pydantic

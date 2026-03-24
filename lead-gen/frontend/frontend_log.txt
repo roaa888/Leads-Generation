@@ -1,0 +1,10 @@
+
+> lead-gen-frontend@0.1.0 dev
+> vite --host 0.0.0.0 --port 3000
+
+
+  VITE v5.4.21  ready in 181 ms
+
+  ➜  Local:   http://localhost:3000/
+  ➜  Network: http://10.255.255.254:3000/
+  ➜  Network: http://172.19.184.88:3000/

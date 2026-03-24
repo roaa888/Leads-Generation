@@ -1,0 +1,4 @@
+lead-gen/backend/venv/
+lead-gen/backend/.venv/
+lead-gen/backend/.env
+lead-gen/backend/.env.example
