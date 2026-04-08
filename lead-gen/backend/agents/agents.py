@@ -1,14 +1,14 @@
 import os
-import requests # Added for hunter_find_email tool
 from bootstrap import configure_runtime
 
 configure_runtime()
 
 from crewai import Agent
-from crewai.tools import tool # Import tool from crewai.tools
+from crewai.tools import tool
 from crewai import LLM
-from tools.search_tools import duckduckgo_company_search
+from tools.search_tools import duckduckgo_company_search, brave_search
 from tools.scraping_tools import website_enrichment_scraper
+from tools.contact_tools import hunter_domain_search
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,15 +16,11 @@ load_dotenv()
 class LeadGenAgents:
     def __init__(self):
         self.llm = LLM(
-            model="groq/llama-3.1-8b-instant",
+            model="groq/llama-3.3-70b-versatile",
             api_key=os.getenv("GROQ_API_KEY"),
             temperature=0.1,
+            max_tokens=512,
         )
-        # self.llm = ChatGroq(
-        #     model="llama-3.3-70b-versatile",
-        #     api_key=os.getenv("GROQ_API_KEY"),
-        #temperature=0.1,
-        #)
 
     def search_agent(self):
         return Agent(
@@ -36,10 +32,10 @@ class LeadGenAgents:
                 "- Never fabricate data.\n"
                 "- Output MUST be valid JSON only (no markdown, no commentary)."
             ),
-            tools=[duckduckgo_company_search],
-            verbose=True,
+            tools=[duckduckgo_company_search, brave_search],
+            verbose=False,
             allow_delegation=False,
-            max_iter=5,
+            max_iter=2,
             llm=self.llm
         )
 
@@ -54,43 +50,23 @@ class LeadGenAgents:
                 "- Output MUST be valid JSON only (no markdown, no commentary)."
             ),
             tools=[website_enrichment_scraper],
-            verbose=True,
+            verbose=False,
             allow_delegation=False,
-            max_iter=5,
+            max_iter=2,
             llm=self.llm
         )
 
     def contact_agent(self):
-        # Define the Hunter.io tool function directly here
-        @tool("hunter_find_email") # Use @tool decorator from crewai.tools (lowercase)
+        @tool("hunter_find_email")
         def hunter_find_email_internal(domain: str):
             """Finds emails for a given company domain. Input must be a single string (e.g., 'stripe.com')."""
-            api_key = os.getenv("HUNTER_API_KEY")
-            if not api_key:
-                return "Hunter API key not found in environment."
-                
-            url = f"https://api.hunter.io/v2/domain-search?domain={domain}&api_key={api_key}&limit=5"
-            
-            response = requests.get(url)
-            if response.status_code != 200:
-                return f"Error from Hunter: {response.status_code}"
-                
-            data = response.json().get('data', {})
-            emails = data.get('emails', [])
-            
-            if not emails:
+            contacts = hunter_domain_search(domain, limit=5)
+            if not contacts:
                 return "No emails found on Hunter."
-                
-            formatted_results = []
-            for e in emails:
-                first = e.get('first_name', 'N/A')
-                last = e.get('last_name', 'N/A')
-                title = e.get('position', 'N/A')
-                email = e.get('value', 'N/A')
-                confidence = e.get('confidence', 0)
-                formatted_results.append(f"Name: {first} {last} | Title: {title} | Email: {email} | Confidence: {confidence}%")
-                
-            return "\n".join(formatted_results)
+            return "\n".join(
+                f"Name: {c['contact_name']} | Title: {c['title']} | Email: {c['email']} | Confidence: {c['confidence']}%"
+                for c in contacts
+            )
 
         return Agent(
             role="Contact Discovery Specialist",
@@ -100,10 +76,10 @@ class LeadGenAgents:
                 "- You MUST ONLY use the 'hunter_find_email' tool.\n"
                 "- Output MUST be valid JSON only (no markdown, no commentary)."
             ),
-            tools=[hunter_find_email_internal], # Use the internally defined tool
-            verbose=True,
+            tools=[hunter_find_email_internal],
+            verbose=False,
             allow_delegation=False,
-            max_iter=5,
+            max_iter=2,
             llm=self.llm
         )
 
@@ -119,9 +95,9 @@ class LeadGenAgents:
                 "- Output MUST be valid JSON only (no markdown, no commentary)."
             ),
             tools=[],
-            verbose=True,
+            verbose=False,
             allow_delegation=False,
-            max_iter=5,
+            max_iter=2,
             llm=self.llm
         )
 
@@ -131,8 +107,28 @@ class LeadGenAgents:
             goal="Structure all data into a clean CSV format with 8 columns: Company Name, Contact Name, Title, Email, Phone, Location, Company Size, Status.",
             backstory="Expert at data formatting. Ensures every row has all 8 fields properly formatted.",
             tools=[],
-            verbose=True,
+            verbose=False,
             allow_delegation=False,
-            max_iter=5,
+            max_iter=2,
             llm=self.llm
         )
+
+
+def create_search_agent() -> Agent:
+    return LeadGenAgents().search_agent()
+
+
+def create_enrichment_agent() -> Agent:
+    return LeadGenAgents().enrichment_agent()
+
+
+def create_contact_agent() -> Agent:
+    return LeadGenAgents().contact_agent()
+
+
+def create_validator_agent() -> Agent:
+    return LeadGenAgents().validator_agent()
+
+
+def create_export_agent() -> Agent:
+    return LeadGenAgents().export_agent()

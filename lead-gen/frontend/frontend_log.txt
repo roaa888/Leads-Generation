@@ -1,10 +1,38 @@
 
 > lead-gen-frontend@0.1.0 dev
-> vite --host 0.0.0.0 --port 3000
+> vite
 
 
-  VITE v5.4.21  ready in 181 ms
+  VITE v5.4.21  ready in 291 ms
 
   ➜  Local:   http://localhost:3000/
   ➜  Network: http://10.255.255.254:3000/
   ➜  Network: http://172.19.184.88:3000/
+8:49:53 PM [vite] hmr update /src/components/ResultsPanel.jsx
+8:49:58 PM [vite] hmr update /src/App.jsx
+8:50:21 PM [vite] http proxy error: /health
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+8:52:39 PM [vite] hmr update /src/components/ResultsPanel.jsx
+8:52:48 PM [vite] hmr update /src/components/ResultsPanel.jsx
+8:53:13 PM [vite] http proxy error: /health
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+8:56:30 PM [vite] hmr update /src/App.jsx
+8:56:59 PM [vite] http proxy error: /health
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+9:00:10 PM [vite] vite.config.js changed, restarting server...
+9:00:10 PM [vite] server restarted.
+9:00:58 PM [vite] hmr update /src/App.jsx
+9:01:08 PM [vite] hmr update /src/App.jsx
+9:01:26 PM [vite] hmr update /src/App.jsx
+9:01:39 PM [vite] hmr update /src/components/LeadForm.jsx
+9:02:29 PM [vite] http proxy error: /health
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+9:02:29 PM [vite] http proxy error: /history
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+9:24:53 PM [vite] hmr update /src/components/ResultsPanel.jsx
+9:25:02 PM [vite] hmr update /src/components/ResultsPanel.jsx

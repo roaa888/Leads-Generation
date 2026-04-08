@@ -1,15 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
-const LeadForm = ({ onSubmit }) => {
-  const [formData, setFormData] = useState({
-    industry: 'SaaS/Software',
-    location: '',
-    lead_type: 'B2B',
-    target_role: 'CEO',
-    company_size: '10-50',
-    keywords: '',
-    num_leads: 10
-  });
+const DEFAULTS = {
+  industry: 'SaaS/Software',
+  location: '',
+  lead_type: 'B2B',
+  target_role: 'CEO',
+  company_size: '10-50',
+  keywords: '',
+  num_leads: 10,
+};
+
+const LeadForm = ({ onSubmit, prefill }) => {
+  const [formData, setFormData] = useState({ ...DEFAULTS });
+
+  useEffect(() => {
+    if (prefill) setFormData({ ...DEFAULTS, ...prefill });
+  }, [prefill]);
 
   const industries = ['SaaS/Software', 'E-commerce', 'Healthcare', 'Real Estate', 'Finance/Fintech', 'Marketing Agency', 'Manufacturing', 'Education', 'Legal', 'Consulting', 'Other'];
   const roles = ['CEO', 'CTO', 'CFO', 'COO', 'CMO', 'Head of Marketing', 'Head of Sales', 'VP of Sales', 'Founder', 'Director', 'Manager'];

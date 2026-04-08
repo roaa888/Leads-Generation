@@ -2,21 +2,31 @@ import React, { useState, useEffect, useRef } from 'react';
 import LeadForm from './components/LeadForm';
 import ProgressTracker from './components/ProgressTracker';
 import ResultsPanel from './components/ResultsPanel';
+import HistoryPanel from './components/HistoryPanel';
+import ErrorBoundary from './components/ErrorBoundary';
 
-const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/generate';
+// Use relative paths so all requests route through the Vite proxy (works in WSL2 and production).
+// Override via VITE_API_URL / VITE_WS_URL if you need to point at a remote backend.
+const apiBase = import.meta.env.VITE_API_URL || '';
+const wsUrl = (() => {
+  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}/ws/generate`;
+})();
 
 function App() {
-  const [activeTab, setActiveTab] = useState('Generate Leads');
-  const [phase, setPhase] = useState('form'); // 'form' | 'running' | 'done'
+  const [activeTab, setActiveTab]   = useState('Generate Leads');
+  const [phase, setPhase]           = useState('form'); // 'form' | 'running' | 'done'
   const [currentStep, setCurrentStep] = useState(0);
-  const [result, setResult] = useState(null);
+  const [result, setResult]         = useState(null);
+  const [prefill, setPrefill]       = useState(null);  // criteria prefilled from history re-run
   const [error, setError] = useState(null);
   const [errorMeta, setErrorMeta] = useState(null);
   const [criteria, setCriteria] = useState(null);
   
   const wsRef = useRef(null);
   const gotWsMessageRef = useRef(false);
+  const statusPollRef = useRef(null);
 
   const waitForBackend = async () => {
     // Backend can take a few seconds to boot (imports, CrewAI, etc.).
@@ -46,10 +56,10 @@ function App() {
     // Quick connectivity check so we can surface a useful UI error when backend isn't reachable.
     const ok = await waitForBackend();
     if (!ok) {
-      setError(`Backend not reachable from the browser at ${apiBase}. This is often caused by CORS/origin mismatch (not the server being down).`);
+      setError('Backend not reachable. Make sure the backend is running: cd lead-gen/backend && uvicorn main:app --host 127.0.0.1 --port 8000');
       setErrorMeta({
         code: 'BACKEND_UNREACHABLE',
-        details: `Health check failed after retries. If you can open ${apiBase}/health in the browser, restart the backend and ensure CORS allows your frontend origin (e.g. http://localhost:5173, http://127.0.0.1:5173, http://wsl.localhost:5173).`,
+        details: 'Health check at /health failed after retries. Start the backend with: uvicorn main:app --host 127.0.0.1 --port 8000',
       });
       setPhase('done');
       setActiveTab('Results Dashboard');
@@ -59,35 +69,50 @@ function App() {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     gotWsMessageRef.current = false;
+    if (statusPollRef.current) clearInterval(statusPollRef.current);
+    statusPollRef.current = null;
 
     ws.onopen = () => {
       ws.send(JSON.stringify(formData));
+    };
+
+    const finishWithResult = (data) => {
+      if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null; }
+      setResult(data);
+      setPhase('done');
+      setActiveTab('Results Dashboard');
+    };
+
+    const finishWithError = (data) => {
+      if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null; }
+      setError(data.message || data.label || 'An unexpected error occurred during lead generation.');
+      setErrorMeta({ code: data.code, details: data.details });
+      setPhase('done');
+      setActiveTab('Results Dashboard');
     };
 
     ws.onmessage = (event) => {
       gotWsMessageRef.current = true;
       const data = JSON.parse(event.data);
       if (data.step) setCurrentStep(data.step);
-      
-      if (data.status === 'ready') {
-        setResult(data);
-        setPhase('done');
-        setActiveTab('Results Dashboard');
+
+      if (data.status === 'started' && data.session_id) {
+        setResult((prev) => ({ ...(prev || {}), session_id: data.session_id, status: 'running' }));
+        statusPollRef.current = setInterval(async () => {
+          try {
+            const res = await fetch(`${apiBase}/status/${data.session_id}`);
+            if (!res.ok) return;
+            const st = await res.json();
+            if (st.status === 'ready') finishWithResult(st);
+            else if (st.status === 'error') finishWithError(st);
+          } catch { /* ignore polling errors */ }
+        }, 1500);
       }
 
-      if (data.status === 'error') {
-        setError(data.message || data.label || 'An unexpected error occurred during lead generation.');
-        setErrorMeta({ code: data.code, details: data.details });
-        setPhase('done');
-        setActiveTab('Results Dashboard');
-      }
+      if (data.status === 'ready') finishWithResult(data);
 
-      // Orchestrator may emit step=0 errors without the outer wrapper.
-      if (data.step === 0 && (data.status === 'error' || data.code || data.details)) {
-        setError(data.message || data.label || 'Pipeline error.');
-        setErrorMeta({ code: data.code, details: data.details });
-        setPhase('done');
-        setActiveTab('Results Dashboard');
+      if (data.status === 'error' || (data.step === 0 && (data.code || data.details))) {
+        finishWithError(data);
       }
 
       if (data.label === "Completed!") {
@@ -114,7 +139,29 @@ function App() {
     };
   };
 
+  const handleDownload = async () => {
+    const sessionId = result?.session_id;
+    if (!sessionId) return;
+    const url = `${apiBase}/download/${sessionId}`;
+    // eslint-disable-next-line no-console
+    console.log("Download URL:", url);
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Download failed: ${response.status}`);
+    }
+    const blob = await response.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'leads.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+  };
+
   const reset = () => {
+    if (statusPollRef.current) clearInterval(statusPollRef.current);
+    statusPollRef.current = null;
     setPhase('form');
     setActiveTab('Generate Leads');
     setCurrentStep(0);
@@ -124,7 +171,8 @@ function App() {
   };
 
   return (
-    <div className="app-shell">
+    <ErrorBoundary>
+      <div className="app-shell">
       <header>
         <div className="logo-container">
           <div className="gem-icon logo"></div>
@@ -135,9 +183,9 @@ function App() {
       </header>
 
       <nav className="tab-nav">
-        {['Generate Leads', 'Pipeline Progress', 'Results Dashboard'].map(tab => (
-          <div 
-            key={tab} 
+        {['Generate Leads', 'Pipeline Progress', 'Results Dashboard', 'Previous Leads'].map(tab => (
+          <div
+            key={tab}
             className={`tab-item ${activeTab === tab ? 'active' : ''}`}
             onClick={() => setActiveTab(tab)}
           >
@@ -153,7 +201,7 @@ function App() {
               <h1 className="hero-title">Find your perfect leads</h1>
               <p className="hero-subtitle">Describe your ideal customer...</p>
             </div>
-            <LeadForm onSubmit={startGeneration} />
+            <LeadForm onSubmit={startGeneration} prefill={prefill} />
           </div>
         )}
 
@@ -165,7 +213,16 @@ function App() {
 
         {activeTab === 'Results Dashboard' && (
           <div className="tab-content">
-            <ResultsPanel result={result} error={error} errorMeta={errorMeta} criteria={criteria} onReset={reset} />
+            <ResultsPanel result={result} error={error} errorMeta={errorMeta} criteria={criteria} onReset={reset} onDownload={handleDownload} />
+          </div>
+        )}
+
+        {activeTab === 'Previous Leads' && (
+          <div className="tab-content">
+            <HistoryPanel onRerun={(savedCriteria) => {
+              setPrefill(savedCriteria);
+              setActiveTab('Generate Leads');
+            }} />
           </div>
         )}
       </main>
@@ -176,7 +233,8 @@ function App() {
         </div>
         <div className="footer-right">$0 / month</div>
       </footer>
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 }
 

@@ -1,8 +1,10 @@
 import asyncio
 import io
 import json
+import ast
 import pandas as pd
 from bootstrap import configure_runtime
+from excel_export import build_excel
 
 configure_runtime()
 
@@ -15,6 +17,11 @@ import requests
 from crewai.tools import tool
 import litellm
 from dotenv import load_dotenv
+from urllib.parse import urlparse
+
+from tools.search_tools import run_company_search
+from tools.scraping_tools import run_website_enrichment
+from tools.contact_tools import hunter_domain_search, find_linkedin_profile, find_company_linkedin
 
 load_dotenv()
 
@@ -63,6 +70,14 @@ def _clean_str(value: object) -> str:
     return s if s else "N/A"
 
 
+def _lead_status(email: str, contact_name: str, title: str) -> str:
+    if email != "N/A" and contact_name != "N/A" and title != "N/A":
+        return "Verified"
+    if email != "N/A":
+        return "New"
+    return "Missing Email"
+
+
 def validate_and_clean_leads(raw: object, *, limit: int) -> list[dict]:
     """
     Deterministic validation layer to avoid brittle LLM-only output and rate limits.
@@ -89,25 +104,21 @@ def validate_and_clean_leads(raw: object, *, limit: int) -> list[dict]:
         if not isinstance(item, dict):
             continue
 
-        company = _clean_str(item.get("Company Name") or item.get("company_name") or item.get("company"))
-        website = _clean_str(item.get("website") or item.get("Website"))
-        contact = _clean_str(item.get("Contact Name") or item.get("contact_name") or item.get("name"))
-        title = _clean_str(item.get("Title") or item.get("title") or item.get("position"))
-        email = _clean_str(item.get("Email") or item.get("email"))
-        phone = _clean_str(item.get("Phone") or item.get("phone"))
-        location = _clean_str(item.get("Location") or item.get("location"))
+        company      = _clean_str(item.get("Company Name") or item.get("company_name") or item.get("company"))
+        website      = _clean_str(item.get("website") or item.get("Website"))
+        contact      = _clean_str(item.get("Contact Name") or item.get("contact_name") or item.get("name"))
+        title        = _clean_str(item.get("Title") or item.get("title") or item.get("position"))
+        email        = _clean_str(item.get("Email") or item.get("email"))
+        phone        = _clean_str(item.get("Phone") or item.get("phone"))
+        location     = _clean_str(item.get("Location") or item.get("location"))
         company_size = _clean_str(item.get("Company Size") or item.get("company_size"))
+        linkedin     = _clean_str(item.get("LinkedIn") or item.get("linkedin"))
 
         email_valid = email != "N/A" and is_email(email, check_dns=False)
         if not email_valid:
             email = "N/A"
 
-        if email != "N/A" and contact != "N/A" and title != "N/A":
-            status = "Verified"
-        elif email != "N/A":
-            status = "New"
-        else:
-            status = "Missing Email"
+        status = _lead_status(email, contact, title)
 
         dedupe_key = (company.lower(), email.lower())
         if dedupe_key in seen:
@@ -117,14 +128,15 @@ def validate_and_clean_leads(raw: object, *, limit: int) -> list[dict]:
         cleaned.append(
             {
                 "Company Name": company,
-                "Website": website,
+                "Website":      website,
                 "Contact Name": contact,
-                "Title": title,
-                "Email": email,
-                "Phone": phone,
-                "Location": location,
+                "Title":        title,
+                "Email":        email,
+                "Phone":        phone,
+                "Location":     location,
                 "Company Size": company_size,
-                "Status": status,
+                "LinkedIn":     linkedin,
+                "Status":       status,
             }
         )
 
@@ -132,6 +144,197 @@ def validate_and_clean_leads(raw: object, *, limit: int) -> list[dict]:
             break
 
     return cleaned
+
+
+def _domain_from_url(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc or parsed.path
+        host = host.strip().lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+    except Exception:
+        return ""
+
+
+
+def _parse_enrichment(text: str) -> dict:
+    """
+    Parse the string returned by website_enrichment_scraper().
+    It's intentionally forgiving.
+    """
+    out = {"title": "N/A", "description": "N/A", "phones": [], "emails": []}
+    if not text:
+        return out
+    for line in str(text).splitlines():
+        if line.lower().startswith("title:"):
+            out["title"] = line.split(":", 1)[1].strip() or "N/A"
+        elif line.lower().startswith("description:"):
+            out["description"] = line.split(":", 1)[1].strip() or "N/A"
+        elif line.lower().startswith("phones:"):
+            raw = line.split(":", 1)[1].strip()
+            try:
+                out["phones"] = ast.literal_eval(raw)
+            except Exception:
+                out["phones"] = []
+        elif line.lower().startswith("emails:"):
+            raw = line.split(":", 1)[1].strip()
+            try:
+                out["emails"] = ast.literal_eval(raw)
+            except Exception:
+                out["emails"] = []
+    return out
+
+
+async def _deterministic_pipeline(criteria: SearchCriteria, *, websocket) -> list[dict] | None:
+    """
+    Non-LLM pipeline: uses tools + Hunter directly. This avoids LLM formatting issues and reduces Groq usage.
+    Returns list of lead dicts in the final CSV schema.
+    """
+    async def send(step: int, label: str, data: dict | None = None):
+        try:
+            payload = {"step": step, "label": label}
+            if data:
+                payload.update(data)
+            await websocket.send_json(payload)
+        except Exception:
+            pass
+
+    await send(1, "Searching for companies...")
+    industry  = (criteria.industry or "").strip().replace("/", " ").replace("\\", " ")
+    location  = (criteria.location or "").strip()
+    keywords  = (criteria.keywords or "").strip()
+
+    # Queries ordered from most-specific to broadest.
+    # Exclusions appended to push search engines toward company homepages.
+    _excl = "-site:crunchbase.com -site:g2.com -site:clutch.co -site:f6s.com -blog -list -ranking"
+    queries = [q.strip() for q in [
+        f"{industry} company {location} official website {_excl}",
+        f"{industry} software company {location} {_excl}",
+        f"{keywords} company {location} {_excl}" if keywords else "",
+        f"{industry} startup {location}",
+        f"{industry} companies in {location}",
+        f"top {industry} companies",
+    ] if q.strip()]
+
+    companies: list[dict] = []
+    used_query = ""
+    for q in queries:
+        used_query = q
+        try:
+            # run_company_search uses time.sleep for DDG retries — run off the event loop
+            raw = await asyncio.to_thread(run_company_search, q)
+            companies = json.loads(raw) if raw else []
+        except Exception:
+            companies = []
+        if companies:
+            break
+
+    if not companies:
+        await send(
+            0,
+            "No companies found from search providers.",
+            {"status": "error", "code": "SEARCH_EMPTY",
+             "details": f"Queries tried: {queries}. Last used: {used_query}"},
+        )
+        return None
+
+    await send(2, "Enriching company data...")
+
+    async def _enrich_one(c: dict) -> dict | None:
+        website      = _clean_str(c.get("website"))
+        company_name = _clean_str(c.get("company_name"))
+        if website == "N/A":
+            return None
+        enrich_text = await asyncio.to_thread(run_website_enrichment, website)
+        parsed = _parse_enrichment(enrich_text)
+        phone  = parsed["phones"][0] if parsed["phones"] else "N/A"
+        return {
+            "Company Name": company_name,
+            "Website":      website,
+            "Phone":        phone or "N/A",
+            "Location":     _clean_str(criteria.location),
+            "Company Size": _clean_str(criteria.company_size),
+            "Description":  _clean_str(parsed.get("description")),
+        }
+
+    enriched = [r for r in await asyncio.gather(*[_enrich_one(c) for c in companies]) if r]
+
+    if not enriched:
+        await send(0, "Enrichment produced no usable companies.", {"status": "error", "code": "ENRICH_EMPTY"})
+        return None
+
+    await send(3, "Finding contacts & emails...")
+
+    async def _contact_one(item: dict) -> dict:
+        domain       = _domain_from_url(item.get("Website", ""))
+        company_name = _clean_str(item.get("Company Name"))
+        contacts     = await asyncio.to_thread(hunter_domain_search, domain, limit=3)
+        best         = contacts[0] if contacts else {}
+
+        email = _clean_str(best.get("email"))
+        if email != "N/A" and not is_email(email, check_dns=False):
+            email = "N/A"
+        contact_name = _clean_str(best.get("contact_name"))
+        title        = _clean_str(best.get("title"))
+
+        # LinkedIn: use Hunter's field first; fall back to DDG search
+        linkedin = (best.get("linkedin") or "").strip()
+        if not linkedin and contact_name != "N/A":
+            linkedin = await asyncio.to_thread(find_linkedin_profile, contact_name, company_name)
+
+        return {
+            "Company Name": company_name,
+            "Contact Name": contact_name,
+            "Title":        title,
+            "Email":        email,
+            "Phone":        _clean_str(item.get("Phone")),
+            "Location":     _clean_str(item.get("Location")),
+            "Company Size": _clean_str(item.get("Company Size")),
+            "LinkedIn":     linkedin or "N/A",
+            "Status":       _lead_status(email, contact_name, title),
+        }
+
+    leads = await asyncio.gather(*[_contact_one(item) for item in enriched])
+    leads = list(leads)[: criteria.num_leads]
+
+    if not leads:
+        await send(0, "No leads could be generated.", {"status": "error", "code": "LEADS_EMPTY"})
+        return None
+
+    await send(4, "Validating & cleaning data...")
+    leads = validate_and_clean_leads(leads, limit=criteria.num_leads)
+
+    await send(5, "Building Excel export...")
+    return leads
+
+
+async def _kickoff_with_retry(crew: Crew, *, step_label: str, retries: int = 3) -> object:
+    """
+    Crew.kickoff() is synchronous and can fail transiently (TPM limits, network blips, empty LLM output).
+    Retry a few times with backoff and treat empty output as an error.
+    """
+    delay_s = 2.0
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            result = await asyncio.to_thread(crew.kickoff)
+            if result is None or str(result).strip() == "":
+                raise ValueError("Invalid response from LLM call - None or empty.")
+            return result
+        except litellm.RateLimitError as e:
+            last_exc = e
+        except (litellm.InternalServerError, litellm.Timeout, litellm.APIConnectionError) as e:
+            last_exc = e
+        except Exception as e:
+            last_exc = e
+
+        if attempt < retries:
+            await asyncio.sleep(delay_s)
+            delay_s = min(delay_s * 2, 15)
+
+    raise RuntimeError(f"{step_label} failed after retries: {last_exc}")
 
 
 # Define the Hunter.io tool function directly here
@@ -199,6 +402,39 @@ class LeadOrchestrator:
 
     async def run_pipeline(self):
         try:
+            # Prefer deterministic tool-driven pipeline to avoid LLM tool hallucinations / rate limits.
+            deterministic = await _deterministic_pipeline(self.criteria, websocket=self.websocket)
+            if deterministic is not None:
+                leads_data = deterministic
+                df = pd.DataFrame(leads_data)
+                expected_cols = ["Company Name", "Contact Name", "Title", "Email", "Phone", "Location", "Company Size", "LinkedIn", "Status"]
+                for col in expected_cols:
+                    if col not in df.columns:
+                        df[col] = "N/A"
+                df = df[expected_cols]
+
+                total    = len(df)
+                verified = len(df[df["Status"] == "Verified"])
+                missing  = len(df[df["Status"] == "Missing Email"])
+                preview  = df.head(10).to_dict(orient="records")
+
+                excel_bytes = build_excel(df.to_dict(orient="records"),
+                                          self.criteria.model_dump())
+
+                await self.send_status(6, "Completed!", {
+                    "total_leads": total,
+                    "verified": verified,
+                    "missing_email": missing,
+                    "preview": preview,
+                })
+                self.last_success = {
+                    "total_leads": total,
+                    "verified": verified,
+                    "missing_email": missing,
+                    "preview": preview,
+                }
+                return excel_bytes
+
             # STEP 1: Search
             await self.send_status(1, "Searching for companies...")
             await asyncio.sleep(15)
@@ -218,16 +454,14 @@ class LeadOrchestrator:
             search_crew = Crew(
                 agents=[search_agent], 
                 tasks=[search_task], 
-                verbose=True,
+                verbose=False,
                 process=Process.sequential,
                 llm=self.agents.llm
             )
-            search_result = search_crew.kickoff()
-            await asyncio.sleep(15)
+            search_result = await _kickoff_with_retry(search_crew, step_label="Search")
 
             # STEP 2: Enrichment
             await self.send_status(2, "Enriching company data...")
-            await asyncio.sleep(15)
             enrichment_agent = self.agents.enrichment_agent()
             enrichment_task = Task(
                 description=f"Given this list of companies: {search_result}. "
@@ -240,15 +474,13 @@ class LeadOrchestrator:
             enrichment_crew = Crew(
                 agents=[enrichment_agent], 
                 tasks=[enrichment_task], 
-                verbose=True,
+                verbose=False,
                 llm=self.agents.llm
             )
-            enriched_result = enrichment_crew.kickoff()
-            await asyncio.sleep(15)
+            enriched_result = await _kickoff_with_retry(enrichment_crew, step_label="Enrichment")
 
             # STEP 3: Contact Discovery
             await self.send_status(3, "Finding contacts & emails...")
-            await asyncio.sleep(15)
             contact_agent = self.agents.contact_agent()
             contact_task = Task(
                 description=f"Given these enriched companies: {enriched_result}. "
@@ -263,66 +495,55 @@ class LeadOrchestrator:
             contact_crew = Crew(
                 agents=[contact_agent], 
                 tasks=[contact_task], 
-                verbose=True,
+                verbose=False,
                 llm=self.agents.llm
             )
-            contact_result = contact_crew.kickoff()
-            await asyncio.sleep(15)
+            contact_result = await _kickoff_with_retry(contact_crew, step_label="Contact discovery")
 
             # STEP 4: Validation
             await self.send_status(4, "Validating & cleaning data...")
-            await asyncio.sleep(15)
-            # Use deterministic local validation to avoid LLM rate limits and format drift.
             validated_output = validate_and_clean_leads(contact_result, limit=self.criteria.num_leads)
-            await asyncio.sleep(15)
 
             # STEP 5: Export
-            await self.send_status(5, "Building CSV export...")
-            await asyncio.sleep(15)
-            # Attempt to parse the JSON output from validation
-            try:
-                # Cleaning the string if it contains markdown code blocks
-                if isinstance(validated_output, list):
-                    leads_data = validated_output
-                else:
-                    clean_json = str(validated_output).strip().replace('```json', '').replace('```', '')
-                    leads_data = json.loads(clean_json)
-            except:
-                # Fallback if LLM didn't return perfect JSON
-                leads_data = []
+            await self.send_status(5, "Building Excel export...")
+            if isinstance(validated_output, list):
+                leads_data = validated_output
+            else:
+                try:
+                    leads_data = json.loads(
+                        str(validated_output).strip().replace('```json', '').replace('```', '')
+                    )
+                except Exception:
+                    leads_data = []
 
             df = pd.DataFrame(leads_data)
-            expected_cols = ["Company Name", "Contact Name", "Title", "Email", "Phone", "Location", "Company Size", "Status"]
-            
-            # Ensure columns exist and are ordered
+            expected_cols = ["Company Name", "Contact Name", "Title", "Email", "Phone", "Location", "Company Size", "LinkedIn", "Status"]
             for col in expected_cols:
                 if col not in df.columns:
                     df[col] = "N/A"
             df = df[expected_cols]
 
-            csv_buffer = io.StringIO()
-            df.to_csv(csv_buffer, index=False)
-            
-            # Stats for completion message
-            total = len(df)
-            verified = len(df[df['Status'] == 'Verified'])
-            missing = len(df[df['Status'] == 'Missing Email'])
-            
+            total    = len(df)
+            verified = len(df[df["Status"] == "Verified"])
+            missing  = len(df[df["Status"] == "Missing Email"])
+            preview  = df.head(10).to_dict(orient="records")
+
+            excel_bytes = build_excel(df.to_dict(orient="records"),
+                                      self.criteria.model_dump())
+
             await self.send_status(6, "Completed!", {
                 "total_leads": total,
                 "verified": verified,
                 "missing_email": missing,
-                "preview": df.head(1).to_dict(orient='records')
+                "preview": preview,
             })
             self.last_success = {
                 "total_leads": total,
                 "verified": verified,
                 "missing_email": missing,
-                "preview": df.head(10).to_dict(orient='records'),
+                "preview": preview,
             }
-            await asyncio.sleep(15)
-
-            return csv_buffer.getvalue()
+            return excel_bytes
 
         except litellm.RateLimitError as e:
             error_message = f"Groq token limit reached. Your Groq organization exceeded its tokens-per-day limit."
@@ -363,7 +584,7 @@ class LeadOrchestrator:
             await self.send_status(
                 0,
                 "Unexpected pipeline error.",
-                {"details": error_message},
+                {"details": error_message or "No additional details."},
                 status="error",
                 code="UNEXPECTED_ERROR",
             )

@@ -1,100 +1,121 @@
 import React, { useEffect, useRef } from 'react';
 
-const ResultsPanel = ({ result, error, errorMeta, criteria, onReset }) => {
+const ResultsPanel = ({ result, error, errorMeta, criteria, onReset, onDownload }) => {
   const donutRef = useRef(null);
   const barRef = useRef(null);
   const lineRef = useRef(null);
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const chartRefs = useRef({ donut: null, bar: null, line: null });
 
   useEffect(() => {
     if (result && !error) {
-      // Use window.Chart since we included it via script tag
-      const Chart = window.Chart;
-      if (!Chart) return;
+      try {
+        // Use window.Chart since we included it via script tag
+        const Chart = window.Chart;
+        if (!Chart) return;
 
-      const total = result.total_leads || 10;
-      const verified = result.verified || 0;
-      const missing = result.missing_email || 0;
-      const partial = total - verified - missing;
-
-      // Donut Chart
-      new Chart(donutRef.current, {
-        type: 'doughnut',
-        data: {
-          labels: ['Verified', 'Partial', 'Missing'],
-          datasets: [{
-            data: [verified, partial, missing],
-            backgroundColor: ['#1bd488', '#45828b', '#b2c9c5'],
-            borderWidth: 2,
-            borderColor: '#ffffff'
-          }]
-        },
-        options: {
-          cutout: '65%',
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { display: false } }
-        }
-      });
-
-      // Bar Chart
-      new Chart(barRef.current, {
-        type: 'bar',
-        data: {
-          labels: ['1-10', '10-50', '50-200', '200-500', '500+'],
-          datasets: [{
-            data: [2, 5, 3, 1, 0], // Sample data
-            backgroundColor: '#055b65',
-            borderRadius: 5
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
-          scales: {
-            y: { grid: { color: '#e0e5e9' }, ticks: { color: '#45828b', font: { family: 'DM Mono', size: 10 } } },
-            x: { grid: { display: false }, ticks: { color: '#45828b', font: { family: 'DM Mono', size: 10 } } }
+        // Cleanup previous charts (prevents crashes on re-render).
+        Object.values(chartRefs.current).forEach((c) => {
+          try {
+            c?.destroy?.();
+          } catch {
+            // ignore
           }
-        }
-      });
+        });
+        chartRefs.current = { donut: null, bar: null, line: null };
 
-      // Line Chart
-      new Chart(lineRef.current, {
-        type: 'line',
-        data: {
-          labels: ['Q1', 'Q2', 'Q3', 'Q4', 'Q5'],
-          datasets: [
-            {
-              label: 'Found',
-              data: [4, 8, 15, 12, 20],
-              borderColor: '#1bd488',
-              backgroundColor: 'rgba(27, 212, 136, 0.08)',
-              fill: true,
-              tension: 0.4,
-              pointRadius: 4
-            },
-            {
-              label: 'Verified',
-              data: [2, 5, 10, 8, 15],
-              borderColor: '#45828b',
-              backgroundColor: 'rgba(69, 130, 139, 0.06)',
-              fill: true,
-              tension: 0.4,
-              pointRadius: 4
+        const total    = Number(result.total_leads ?? 0) || 0;
+        const verified = Number(result.verified ?? 0) || 0;
+        const missing  = Number(result.missing_email ?? 0) || 0;
+        const partial  = Math.max(0, total - verified - missing);
+        const preview  = Array.isArray(result.preview) ? result.preview : [];
+
+        // Company-size counts from real preview data
+        const sizeCounts = {};
+        preview.forEach(r => {
+          const sz = r['Company Size'] || 'N/A';
+          sizeCounts[sz] = (sizeCounts[sz] || 0) + 1;
+        });
+        const sizeLabels = Object.keys(sizeCounts);
+        const sizeData   = sizeLabels.map(k => sizeCounts[k]);
+
+        // Title distribution from real preview data
+        const titleCounts = {};
+        preview.forEach(r => {
+          const t = r['Title'] && r['Title'] !== 'N/A' ? r['Title'] : 'Unknown';
+          titleCounts[t] = (titleCounts[t] || 0) + 1;
+        });
+        const titleLabels = Object.keys(titleCounts).slice(0, 6);
+        const titleData   = titleLabels.map(k => titleCounts[k]);
+
+        // Donut Chart — status breakdown
+        chartRefs.current.donut = new Chart(donutRef.current, {
+          type: 'doughnut',
+          data: {
+            labels: ['Verified', 'Partial', 'Missing'],
+            datasets: [{
+              data: [verified, partial, missing],
+              backgroundColor: ['#1bd488', '#45828b', '#b2c9c5'],
+              borderWidth: 2,
+              borderColor: '#ffffff'
+            }]
+          },
+          options: {
+            cutout: '65%',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } }
+          }
+        });
+
+        // Bar Chart — company size distribution from real data
+        chartRefs.current.bar = new Chart(barRef.current, {
+          type: 'bar',
+          data: {
+            labels: sizeLabels.length ? sizeLabels : ['N/A'],
+            datasets: [{
+              data: sizeData.length ? sizeData : [0],
+              backgroundColor: '#055b65',
+              borderRadius: 5
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              y: { grid: { color: '#e0e5e9' }, ticks: { color: '#45828b', font: { family: 'DM Mono', size: 10 } } },
+              x: { grid: { display: false }, ticks: { color: '#45828b', font: { family: 'DM Mono', size: 10 }, maxRotation: 30 } }
             }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
-          scales: {
-            y: { grid: { color: '#e0e5e9' }, ticks: { color: '#45828b', font: { family: 'DM Mono', size: 10 } } },
-            x: { grid: { display: false }, ticks: { color: '#45828b', font: { family: 'DM Mono', size: 10 } } }
           }
-        }
-      });
+        });
+
+        // Bar Chart — contact title distribution from real data
+        chartRefs.current.line = new Chart(lineRef.current, {
+          type: 'bar',
+          data: {
+            labels: titleLabels.length ? titleLabels : ['N/A'],
+            datasets: [{
+              data: titleData.length ? titleData : [0],
+              backgroundColor: '#45828b',
+              borderRadius: 5
+            }]
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { grid: { color: '#e0e5e9' }, ticks: { color: '#45828b', font: { family: 'DM Mono', size: 10 } } },
+              y: { grid: { display: false }, ticks: { color: '#45828b', font: { family: 'DM Mono', size: 10 } } }
+            }
+          }
+        });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('Chart render error', e);
+      }
     }
   }, [result, error]);
 
@@ -130,7 +151,15 @@ const ResultsPanel = ({ result, error, errorMeta, criteria, onReset }) => {
     );
   }
 
-  const { session_id, total_leads, verified, missing_email, preview } = result;
+  // Debug log
+  // eslint-disable-next-line no-console
+  console.log("ResultsPanel props:", { result, error, errorMeta, criteria });
+
+  const sessionId = result?.session_id;
+  const totalLeads = Number(result?.total_leads ?? 0) || 0;
+  const verified = Number(result?.verified ?? 0) || 0;
+  const missingEmail = Number(result?.missing_email ?? 0) || 0;
+  const preview = Array.isArray(result?.preview) ? result.preview : [];
 
   return (
     <div className="dashboard-container">
@@ -138,14 +167,20 @@ const ResultsPanel = ({ result, error, errorMeta, criteria, onReset }) => {
         <div style={{ fontSize: '13px', fontWeight: 500 }}>
           Results — {criteria?.industry} / {criteria?.location} / {criteria?.target_role}
         </div>
-        <a href={`${apiBase}/download/${session_id}`} className="submit-btn" style={{ width: 'auto', padding: '8px 16px', fontSize: '11px' }}>
-          ⬇ Download leads.csv
-        </a>
+        <button
+          className="submit-btn"
+          style={{ width: 'auto', padding: '8px 16px', fontSize: '11px' }}
+          onClick={onDownload}
+          disabled={!sessionId}
+          title={!sessionId ? 'No session id yet' : 'Download CSV'}
+        >
+          ⬇ Download leads.xlsx
+        </button>
       </div>
 
       <div className="stat-cards">
         <div className="stat-card" style={{ borderTopColor: '#055b65' }}>
-          <span className="stat-val">{total_leads}</span>
+          <span className="stat-val">{totalLeads}</span>
           <span className="stat-label">Total Leads</span>
           <span className="stat-detail">Found from sources</span>
         </div>
@@ -155,12 +190,12 @@ const ResultsPanel = ({ result, error, errorMeta, criteria, onReset }) => {
           <span className="stat-detail">Direct contact found</span>
         </div>
         <div className="stat-card" style={{ borderTopColor: '#45828b' }}>
-          <span className="stat-val">{total_leads - verified - missing_email}</span>
+          <span className="stat-val">{Math.max(0, totalLeads - verified - missingEmail)}</span>
           <span className="stat-label">Partial</span>
           <span className="stat-detail">General emails only</span>
         </div>
         <div className="stat-card" style={{ borderTopColor: '#b2c9c5' }}>
-          <span className="stat-val">{missing_email}</span>
+          <span className="stat-val">{missingEmail}</span>
           <span className="stat-label">Missing</span>
           <span className="stat-detail">No email found</span>
         </div>
@@ -187,19 +222,19 @@ const ResultsPanel = ({ result, error, errorMeta, criteria, onReset }) => {
       </div>
 
       <div className="chart-card" style={{ marginBottom: '16px' }}>
-        <div className="chart-title">Leads Found per Search Query</div>
+        <div className="chart-title">Contact Title Distribution</div>
         <div style={{ height: '200px' }}>
           <canvas ref={lineRef}></canvas>
         </div>
       </div>
 
       <div className="table-card">
-        <div className="table-header-bar">
-          <div style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text2)', letterSpacing: '0.8px' }}>
-            All Leads ({total_leads})
+          <div className="table-header-bar">
+            <div style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text2)', letterSpacing: '0.8px' }}>
+            All Leads ({totalLeads})
+            </div>
+            <div style={{ color: 'var(--green)', fontSize: '11px' }}>● Pipeline complete</div>
           </div>
-          <div style={{ color: 'var(--green)', fontSize: '11px' }}>● Pipeline complete</div>
-        </div>
         <div style={{ overflowX: 'auto' }}>
           <table>
             <thead>
@@ -211,11 +246,12 @@ const ResultsPanel = ({ result, error, errorMeta, criteria, onReset }) => {
                 <th>Phone</th>
                 <th>Location</th>
                 <th>Size</th>
+                <th>LinkedIn</th>
                 <th>Status</th>
               </tr>
             </thead>
             <tbody>
-              {preview?.map((row, idx) => (
+              {preview.map((row, idx) => (
                 <tr key={idx}>
                   <td>{row['Company Name']}</td>
                   <td>{row['Contact Name']}</td>
@@ -225,7 +261,18 @@ const ResultsPanel = ({ result, error, errorMeta, criteria, onReset }) => {
                   <td>{row['Location']}</td>
                   <td>{row['Company Size']}</td>
                   <td>
-                    <span className={`badge ${row['Status'].toLowerCase().replace(' ', '')}`}>
+                    {row['LinkedIn'] && row['LinkedIn'] !== 'N/A' ? (
+                      <a href={row['LinkedIn']} target="_blank" rel="noopener noreferrer"
+                         style={{ color: '#0A66C2', fontWeight: 600, fontSize: '11px', textDecoration: 'none' }}
+                         title={row['LinkedIn']}>
+                        in
+                      </a>
+                    ) : (
+                      <span style={{ color: 'var(--muted)', fontSize: '10px' }}>—</span>
+                    )}
+                  </td>
+                  <td>
+                    <span className={`badge ${(row['Status'] || '').toLowerCase().replace(' ', '')}`}>
                       {row['Status']}
                     </span>
                   </td>

@@ -1,9 +1,9 @@
 import uuid
+import io
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
-import io
 
 from bootstrap import configure_runtime
 
@@ -11,137 +11,156 @@ configure_runtime()
 
 from models import SearchCriteria
 from orchestrator import LeadOrchestrator
+import db
 
 app = FastAPI()
 
-# Store CSV strings in memory dict keyed by session_id
-session_storage = {}
-# Store session status for UI/debugging
-session_status = {}
+# In-memory store for the current server session (fast access during active pipeline).
+# The DB is the persistent source of truth across restarts.
+session_storage: dict[str, bytes] = {}
+session_status:  dict[str, dict]  = {}
+recent_sessions: list[str]        = []
+
 
 class StatusTrackingWebSocket:
     def __init__(self, websocket: WebSocket, session_id: str):
-        self._ws = websocket
+        self._ws         = websocket
         self._session_id = session_id
 
     async def send_json(self, data):
-        # Keep a server-side status record for polling, even if the WS drops.
         if isinstance(data, dict):
             session_status[self._session_id] = {
                 **session_status.get(self._session_id, {}),
-                **{k: v for k, v in data.items() if k in ("status", "step", "label", "code", "message", "details")},
+                **{k: v for k, v in data.items()
+                   if k in ("status", "step", "label", "code", "message", "details")},
                 "session_id": self._session_id,
             }
         await self._ws.send_json(data)
 
+
 app.add_middleware(
     CORSMiddleware,
-    # Dev-friendly CORS for WSL2 + Windows browsers.
-    # We don't rely on cookies here, so allow any origin and disable credentials.
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+async def startup():
+    await db.init_db()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/status/{session_id}")
-def get_status(session_id: str):
+async def get_status(session_id: str):
     status = session_status.get(session_id)
     if not status:
         raise HTTPException(status_code=404, detail="Session not found or expired.")
     return status
 
+
+@app.get("/history")
+async def get_history():
+    """Return all previously completed lead generation sessions."""
+    sessions = await db.list_sessions()
+    return {"sessions": sessions}
+
+
 @app.websocket("/ws/generate")
 async def generate_leads(websocket: WebSocket):
     await websocket.accept()
     try:
-        # Receive JSON -> parse as SearchCriteria
-        data = await websocket.receive_json()
+        data     = await websocket.receive_json()
         criteria = SearchCriteria(**data)
-        
-        # Generate session_id (uuid4)
+
         session_id = str(uuid.uuid4())
         session_status[session_id] = {"status": "running", "step": 0, "session_id": session_id}
+        recent_sessions.append(session_id)
 
-        # Send session_id immediately so the UI can reference it even if the socket drops.
+        # Persist the session immediately so history shows it even before completion.
+        await db.save_session(
+            session_id, criteria.model_dump(), status="running"
+        )
+
         await websocket.send_json({"status": "started", "session_id": session_id})
-        
-        # Call run_pipeline(criteria, websocket)
-        tracking_ws = StatusTrackingWebSocket(websocket, session_id)
+
+        tracking_ws  = StatusTrackingWebSocket(websocket, session_id)
         orchestrator = LeadOrchestrator(criteria, tracking_ws)
-        csv_data = await orchestrator.run_pipeline()
-        
-        if csv_data:
-            # Store CSV string in memory
-            session_storage[session_id] = csv_data
-            ready_status = {"status": "ready", "session_id": session_id}
-            if orchestrator.last_success:
-                ready_status.update(orchestrator.last_success)
+        excel_data   = await orchestrator.run_pipeline()
+
+        if excel_data:
+            session_storage[session_id] = excel_data
+
+            success = orchestrator.last_success or {}
+            ready_status = {"status": "ready", "session_id": session_id, **success}
             session_status[session_id] = ready_status
-            
-            # Send: {status:"ready", session_id, message}
-            payload = {
-                "status": "ready",
-                "session_id": session_id,
-                "message": "Leads generated successfully!"
-            }
-            if orchestrator.last_success:
-                payload.update(orchestrator.last_success)
+
+            # Persist to DB so history survives restarts.
+            await db.save_session(
+                session_id,
+                criteria.model_dump(),
+                status="ready",
+                total_leads=success.get("total_leads", 0),
+                verified=success.get("verified", 0),
+                missing_email=success.get("missing_email", 0),
+                preview=success.get("preview", []),
+                excel_data=excel_data,
+            )
+
+            payload = {"status": "ready", "session_id": session_id,
+                       "message": "Leads generated successfully!", **success}
             try:
                 await tracking_ws.send_json(payload)
             except Exception:
-                pass  # Client disconnected before we could send the final ready message
+                pass
         else:
-            # Prefer the detailed reason sent by the orchestrator (step=0).
-            if orchestrator.last_error:
-                session_status[session_id] = {**orchestrator.last_error, "session_id": session_id}
-                try:
-                    await tracking_ws.send_json(orchestrator.last_error)
-                except Exception:
-                    pass
-            else:
-                session_status[session_id] = {"status": "error", "code": "PIPELINE_FAILED", "message": "Pipeline failed to generate leads.", "session_id": session_id}
-                try:
-                    await tracking_ws.send_json({
-                        "status": "error",
-                        "code": "PIPELINE_FAILED",
-                        "message": "Pipeline failed to generate leads."
-                    })
-                except Exception:
-                    pass
-            
+            err = orchestrator.last_error or {
+                "status": "error", "code": "PIPELINE_FAILED",
+                "message": "Pipeline failed to generate leads.",
+            }
+            session_status[session_id] = {**err, "session_id": session_id}
+            await db.save_session(session_id, criteria.model_dump(), status="error")
+            try:
+                await tracking_ws.send_json(err)
+            except Exception:
+                pass
+
     except ValidationError as e:
         await websocket.send_json(
-            {"status": "error", "code": "INVALID_CRITERIA", "message": f"Invalid criteria: {str(e)}"}
+            {"status": "error", "code": "INVALID_CRITERIA",
+             "message": f"Invalid criteria: {str(e)}"}
         )
     except Exception as e:
         await websocket.send_json(
-            {"status": "error", "code": "SERVER_ERROR", "message": f"Server error: {str(e)}"}
+            {"status": "error", "code": "SERVER_ERROR",
+             "message": f"Server error: {str(e)}"}
         )
     finally:
-        # Let FastAPI close gracefully; explicit close can race the final message in some clients.
         try:
             await websocket.close()
         except Exception:
             pass
 
+
 @app.get("/download/{session_id}")
-async def download_csv(session_id: str):
-    # Look up session_id in memory dict
-    csv_content = session_storage.get(session_id)
-    if not csv_content:
+async def download_excel(session_id: str):
+    # Check in-memory first (current session), then fall back to DB (previous sessions).
+    data = session_storage.get(session_id) or await db.get_excel(session_id)
+    if not data:
         raise HTTPException(status_code=404, detail="Session not found or expired.")
-    
-    # Return StreamingResponse with Content-Disposition
+
     return StreamingResponse(
-        io.StringIO(csv_content),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=leads_{session_id}.csv"}
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=leads_{session_id[:8]}.xlsx"},
     )
+
 
 if __name__ == "__main__":
     import uvicorn
