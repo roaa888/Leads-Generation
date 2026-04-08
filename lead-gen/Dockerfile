@@ -4,7 +4,6 @@ WORKDIR /build
 COPY frontend/package*.json ./
 RUN npm ci --silent
 COPY frontend/ ./
-# Empty vars = relative URLs, routes through same origin in production
 RUN VITE_API_URL="" VITE_WS_URL="" npm run build
 
 # ── Stage 2: Python backend ───────────────────────────────────────────────────
@@ -19,14 +18,14 @@ RUN apt-get update \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# Install Python deps first (layer-cached unless requirements.txt changes)
+# Install Python deps into the system interpreter (not a venv)
 COPY backend/requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 
 # Copy backend source
 COPY backend/ .
 
-# Copy built frontend into static/ — FastAPI serves this in production
+# Copy built frontend — FastAPI serves this in production
 COPY --from=frontend /build/dist ./static
 
 EXPOSE 8000

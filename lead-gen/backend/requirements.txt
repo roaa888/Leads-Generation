@@ -1,6 +1,4 @@
-fastapi
-uvicorn[standard]
-websockets
+fastapi[standard]
 python-dotenv
 crewai
 crewai-tools
