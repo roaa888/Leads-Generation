@@ -1,0 +1,13 @@
+lead-gen/backend/.venv
+lead-gen/backend/.runtime
+lead-gen/backend/__pycache__
+lead-gen/backend/**/__pycache__
+lead-gen/backend/**/*.pyc
+lead-gen/backend/backend_log.txt
+lead-gen/backend/test_*.py
+lead-gen/frontend/node_modules
+lead-gen/frontend/dist
+lead-gen/frontend/frontend_log.txt
+lead-gen/frontend/.agents
+**/.env
+**/*.db
