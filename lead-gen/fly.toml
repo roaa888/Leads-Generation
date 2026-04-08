@@ -1,4 +1,4 @@
-app = "leads-generation"
+app = "leadgeneration"
 primary_region = "iad"
 
 [build]
@@ -18,7 +18,7 @@ primary_region = "iad"
   force_https          = true
   auto_stop_machines   = true
   auto_start_machines  = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   # Keep WebSocket connections alive (pipeline can run for ~60s)
   [http_service.concurrency]
