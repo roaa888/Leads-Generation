@@ -12,12 +12,16 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc \
+    && apt-get install -y --no-install-recommends gcc curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
 
 # Install Python deps first (layer-cached unless requirements.txt changes)
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN uv pip install --system --no-cache -r requirements.txt
 
 # Copy backend source
 COPY backend/ .
