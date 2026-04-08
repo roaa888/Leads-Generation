@@ -1,0 +1,13 @@
+backend/.venv
+backend/.runtime
+backend/__pycache__
+backend/**/__pycache__
+backend/**/*.pyc
+backend/backend_log.txt
+backend/test_*.py
+frontend/node_modules
+frontend/dist
+frontend/frontend_log.txt
+frontend/.agents
+**/.env
+**/*.db

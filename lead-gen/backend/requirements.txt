@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 websockets
 python-dotenv
 crewai
@@ -9,7 +9,8 @@ duckduckgo-search
 requests
 beautifulsoup4
 lxml
-playwright
 pyisemail
 pandas
 pydantic
+openpyxl
+aiofiles

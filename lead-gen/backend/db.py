@@ -6,11 +6,17 @@ don't stall the FastAPI event loop.
 
 import asyncio
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-_DB_PATH = Path(__file__).resolve().parent / ".runtime" / "data" / "sessions.db"
+def _db_path() -> Path:
+    runtime = os.environ.get("LEADGEN_RUNTIME_DIR")
+    base = Path(runtime) if runtime else Path(__file__).resolve().parent / ".runtime"
+    return base / "data" / "sessions.db"
+
+_DB_PATH = _db_path()
 
 
 def _connect() -> sqlite3.Connection:

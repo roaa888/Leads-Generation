@@ -1,7 +1,9 @@
 import uuid
 import io
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
@@ -160,6 +162,25 @@ async def download_excel(session_id: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=leads_{session_id[:8]}.xlsx"},
     )
+
+
+# ── Serve built React frontend (production only) ─────────────────────────────
+# The Dockerfile copies frontend/dist → backend/static.
+# In local dev this directory doesn't exist, so we skip it.
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(_STATIC_DIR / "assets")), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    async def spa_root():
+        return FileResponse(str(_STATIC_DIR / "index.html"))
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_catch_all(full_path: str):
+        candidate = _STATIC_DIR / full_path
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_STATIC_DIR / "index.html"))
 
 
 if __name__ == "__main__":
