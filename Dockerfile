@@ -28,5 +28,6 @@ COPY --from=frontend /build/dist ./static
 
 EXPOSE 8000
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONFAULTHANDLER=1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "python -c 'import main; print(\"Import OK\")' 2>&1 && uvicorn main:app --host 0.0.0.0 --port 8000 --log-level debug"]
