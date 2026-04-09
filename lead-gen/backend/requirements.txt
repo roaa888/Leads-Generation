@@ -2,6 +2,7 @@ fastapi[standard]
 python-dotenv
 crewai
 crewai-tools
+litellm
 langchain-groq
 ddgs
 requests
