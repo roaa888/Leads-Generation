@@ -1,4 +1,5 @@
 lead-gen/backend/.venv
+lead-gen/backend/venv
 lead-gen/backend/.runtime
 lead-gen/backend/__pycache__
 lead-gen/backend/**/__pycache__

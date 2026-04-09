@@ -26,8 +26,13 @@ COPY lead-gen/backend/ .
 # Built frontend → FastAPI serves it as static files
 COPY --from=frontend /build/dist ./static
 
+# Verify all critical imports work at build time
+RUN python -c "import fastapi, uvicorn; print('fastapi+uvicorn OK')"
+RUN python -c "import crewai; print('crewai OK')"
+RUN python -c "import main; print('main OK')"
+
 EXPOSE 8000
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONFAULTHANDLER=1
 
-CMD ["sh", "-c", "python -c 'import main; print(\"Import OK\")' 2>&1 && uvicorn main:app --host 0.0.0.0 --port 8000 --log-level debug"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
