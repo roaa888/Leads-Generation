@@ -3,7 +3,7 @@ python-dotenv
 crewai
 crewai-tools
 langchain-groq
-duckduckgo-search
+ddgs
 requests
 beautifulsoup4
 lxml
