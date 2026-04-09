@@ -21,3 +21,5 @@ INFO:     127.0.0.1:33778 - "GET /status/d266a23c-40a5-4629-b74f-e7f8930b8fb6 HT
 INFO:     127.0.0.1:33780 - "GET /status/d266a23c-40a5-4629-b74f-e7f8930b8fb6 HTTP/1.1" 200 OK
 INFO:     127.0.0.1:33794 - "GET /status/d266a23c-40a5-4629-b74f-e7f8930b8fb6 HTTP/1.1" 200 OK
 INFO:     connection closed
+INFO:     127.0.0.1:52322 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52336 - "GET /history HTTP/1.1" 200 OK
